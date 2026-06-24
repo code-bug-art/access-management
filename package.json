@@ -1,0 +1,35 @@
+{
+  "name": "access-management-system",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Multi-tenant access control POC. Core: access-management service (identity + authorization + audit) in a DDD layout. Business services are PEPs that delegate decisions to it.",
+  "scripts": {
+    "install:all": "npm install && npm install --prefix apps/ui",
+    "ui": "npm --prefix apps/ui run dev",
+    "seed": "tsx tools/seed/seed.ts",
+    "dev:core": "tsx watch src/services/access-management/main.ts",
+    "dev:expense": "tsx watch src/services/expense-service/main.ts",
+    "dev:payroll": "tsx watch src/services/payroll-service/main.ts",
+    "dev:reporting": "tsx watch src/services/reporting-service/main.ts",
+    "dev": "concurrently -n core,expense,payroll,reporting -c magenta,green,yellow,blue \"npm:dev:core\" \"npm:dev:expense\" \"npm:dev:payroll\" \"npm:dev:reporting\"",
+    "demo": "tsx tools/demo/demo.ts",
+    "test": "echo \"tests will live in /test (todo)\" && exit 0"
+  },
+  "dependencies": {
+    "@fastify/cors": "^10.0.1",
+    "bcryptjs": "^2.4.3",
+    "dotenv": "^16.4.7",
+    "fastify": "^5.2.0",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.9.5"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/jsonwebtoken": "^9.0.7",
+    "@types/node": "^22.10.5",
+    "concurrently": "^9.1.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}

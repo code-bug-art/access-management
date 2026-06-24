@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022"],
+    "types": ["node"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "verbatimModuleSyntax": false,
+    "noEmit": true,
+    "baseUrl": "src",
+    "paths": {
+      "@contracts": ["contracts/index.ts"],
+      "@pep-sdk": ["pep-sdk/index.ts"],
+      "@svc/*": ["services/*"]
+    }
+  },
+  "include": ["src", "tools"]
+}

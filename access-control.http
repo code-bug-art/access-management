@@ -1,0 +1,423 @@
+# Access-Control POC — test scenarios (REST Client / .http format)
+# Multi-tenant RBAC+ABAC, fail-closed PDP. One request block per case.
+# Above each block: case id | capability | expected status + decision/reason it asserts.
+#
+# HOW TO USE
+# 1. Reseed first (IDs are regenerated each seed):  npm run seed
+# 2. Copy the resource/user IDs from seed-fixtures.json into the @vars below.
+# 3. Run the login blocks; REST Client captures the JWTs into the named response vars.
+# 4. serviceToken default = dev-service-token-change-me (src/shared/config.ts).
+#
+# Capabilities traced: AUTH, TENANT-ISOLATION, ABAC(ownerOnly/inOrgSubtree),
+# ROLE-INHERITANCE, CROSS-SERVICE, ADMIN-GUARD, S2S-TOKEN, AUDIT, DYNAMIC-ROLE-MGMT.
+
+@auth = http://localhost:4001
+@pdp  = http://localhost:4002
+@exp  = http://localhost:4003
+@pay  = http://localhost:4004
+@rep  = http://localhost:4005
+@svctoken = dev-service-token-change-me
+
+# --- fill these from seed-fixtures.json after `npm run seed` ---
+@acmeTenantId = PASTE_ACME_TENANT_ID
+@carolExp = PASTE_expenses.carol
+@daveExp  = PASTE_expenses.dave
+@globexExp = PASTE_expenses.globex
+@carolPay = PASTE_payroll.carol
+@finReport = PASTE_reports.finance
+@carolId = PASTE_users.carol.id
+@daveId  = PASTE_users.dave.id
+@approverRole = PASTE_roles.approver
+@employeeRole = PASTE_roles.employee
+@missingId = 6a3530c117dd162379a1ffff
+
+###############################################################################
+# AUTH
+###############################################################################
+
+# AUTH-1 | AUTH | login happy path -> 200 + {token}
+# @name loginAlice
+POST {{auth}}/auth/login
+content-type: application/json
+
+{ "tenantSlug": "acme", "email": "alice@acme.com", "password": "password" }
+
+###
+@alice = {{loginAlice.response.body.token}}
+
+# @name loginBob
+POST {{auth}}/auth/login
+content-type: application/json
+
+{ "tenantSlug": "acme", "email": "bob@acme.com", "password": "password" }
+
+###
+@bob = {{loginBob.response.body.token}}
+
+# @name loginCarol
+POST {{auth}}/auth/login
+content-type: application/json
+
+{ "tenantSlug": "acme", "email": "carol@acme.com", "password": "password" }
+
+###
+@carol = {{loginCarol.response.body.token}}
+
+# @name loginDave
+POST {{auth}}/auth/login
+content-type: application/json
+
+{ "tenantSlug": "acme", "email": "dave@acme.com", "password": "password" }
+
+###
+@dave = {{loginDave.response.body.token}}
+
+# @name loginFiona
+POST {{auth}}/auth/login
+content-type: application/json
+
+{ "tenantSlug": "acme", "email": "fiona@acme.com", "password": "password" }
+
+###
+@fiona = {{loginFiona.response.body.token}}
+
+# @name loginEvan
+POST {{auth}}/auth/login
+content-type: application/json
+
+{ "tenantSlug": "globex", "email": "evan@globex.com", "password": "password" }
+
+###
+@evan = {{loginEvan.response.body.token}}
+
+# AUTH-2 | AUTH | unknown tenant slug -> 401 "invalid tenant"
+POST {{auth}}/auth/login
+content-type: application/json
+
+{ "tenantSlug": "nope", "email": "alice@acme.com", "password": "password" }
+
+###
+# AUTH-3 | AUTH | wrong password -> 401 "invalid credentials"
+POST {{auth}}/auth/login
+content-type: application/json
+
+{ "tenantSlug": "acme", "email": "alice@acme.com", "password": "wrong" }
+
+###
+# AUTH-4 | AUTH | unknown user -> 401 "invalid credentials" (no user enumeration)
+POST {{auth}}/auth/login
+content-type: application/json
+
+{ "tenantSlug": "acme", "email": "ghost@acme.com", "password": "password" }
+
+###
+# AUTH-5 | AUTH | /auth/me with valid bearer -> 200, claims.email == alice@acme.com
+GET {{auth}}/auth/me
+Authorization: Bearer {{alice}}
+
+###
+# AUTH-6 | AUTH | /auth/me no token -> 401 "missing bearer token"
+GET {{auth}}/auth/me
+
+###
+# AUTH-7 | AUTH | /auth/me garbage token -> 401 "invalid or expired token"
+GET {{auth}}/auth/me
+Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.garbage.sig
+
+###
+# AUTH-8 | AUTH | /auth/me EXPIRED token -> 401 "invalid or expired token"
+# Generate an expired token:
+#   node --input-type=module -e "import jwt from 'jsonwebtoken'; console.log(jwt.sign({sub:'x',tenantId:'y',email:'e',roleVersion:1},'dev-jwt-secret-change-me',{expiresIn:-10}))"
+GET {{auth}}/auth/me
+Authorization: Bearer PASTE_EXPIRED_TOKEN
+
+###
+# AUTH-9 | AUTH | demo-catalog is intentionally UNAUTHENTICATED (POC) -> 200 {tenants,...}
+GET {{auth}}/auth/demo-catalog
+
+###############################################################################
+# TENANT ISOLATION (PRD #1 — hard gate before RBAC/ABAC)
+###############################################################################
+
+# TEN-1 | TENANT-ISOLATION | Acme admin reads Globex expense -> 403 DENY "cross-tenant access denied"
+GET {{exp}}/expenses/{{globexExp}}
+Authorization: Bearer {{alice}}
+
+###
+# TEN-2 | TENANT-ISOLATION | Globex user reads Acme expense -> 403 DENY "cross-tenant access denied"
+GET {{exp}}/expenses/{{carolExp}}
+Authorization: Bearer {{evan}}
+
+###
+# TEN-3 | TENANT-ISOLATION | Globex user reads own-tenant expense -> 200 (amount 999)
+GET {{exp}}/expenses/{{globexExp}}
+Authorization: Bearer {{evan}}
+
+###############################################################################
+# ABAC ownerOnly (PRD #2)
+###############################################################################
+
+# OWN-1 | ABAC-ownerOnly | Carol reads her own expense -> 200 (PDP decision ALLOW condition ownerOnly; GET body is the expense, no reason echoed)
+GET {{exp}}/expenses/{{carolExp}}
+Authorization: Bearer {{carol}}
+
+###
+# OWN-2 | ABAC-ownerOnly | Carol reads Dave's expense -> 403 DENY "condition failed: ownerOnly"
+GET {{exp}}/expenses/{{daveExp}}
+Authorization: Bearer {{carol}}
+
+###
+# OWN-3 | ABAC-ownerOnly | Carol lists expenses -> 200, only her own item present (per-item PDP filter)
+GET {{exp}}/expenses
+Authorization: Bearer {{carol}}
+
+###############################################################################
+# ABAC inOrgSubtree + role hierarchy (PRD #3)
+###############################################################################
+
+# SUB-1 | ABAC-inOrgSubtree | Bob (Approver, Finance) approves Carol's expense (AP is under Finance) -> 200 ALLOW "condition inOrgSubtree"
+POST {{exp}}/expenses/{{carolExp}}/approve
+Authorization: Bearer {{bob}}
+
+###
+# SUB-2 | ABAC-inOrgSubtree | Bob approves Dave's expense (Engineering, outside Finance subtree) -> 403 DENY "condition failed: inOrgSubtree"
+POST {{exp}}/expenses/{{daveExp}}/approve
+Authorization: Bearer {{bob}}
+
+###
+# SUB-3 | RBAC | Carol (Employee, no approve grant) approves Carol's expense -> 403 DENY "no permission grant for expense:approve"
+POST {{exp}}/expenses/{{carolExp}}/approve
+Authorization: Bearer {{carol}}
+
+###############################################################################
+# ROLE INHERITANCE (PRD #4 — FinanceAdmin inherits + has unconditional expense:read)
+###############################################################################
+
+# INH-1 | ROLE-INHERITANCE | Fiona (FinanceAdmin) reads Dave's expense tenant-wide -> 200 (unconditional grant overrides ownerOnly)
+GET {{exp}}/expenses/{{daveExp}}
+Authorization: Bearer {{fiona}}
+
+###
+# INH-2 | ROLE-INHERITANCE | Fiona lists expenses -> 200, sees ALL acme expenses (carol + dave)
+GET {{exp}}/expenses
+Authorization: Bearer {{fiona}}
+
+###############################################################################
+# CROSS-SERVICE (PRD #5 — same identity, different per-service permission)
+###############################################################################
+
+# XS-1 | CROSS-SERVICE | Fiona reads payroll (FinanceAdmin has payroll:read) -> 200 (grossPay 5000)
+GET {{pay}}/payroll/{{carolPay}}
+Authorization: Bearer {{fiona}}
+
+###
+# XS-2 | CROSS-SERVICE | Carol reads payroll (no payroll grant) -> 403 DENY "no permission grant for payroll:read"
+GET {{pay}}/payroll/{{carolPay}}
+Authorization: Bearer {{carol}}
+
+###
+# XS-3 | CROSS-SERVICE | Fiona reads report (no report grant in seed) -> 403 DENY "no permission grant for report:read"
+GET {{rep}}/reports/{{finReport}}
+Authorization: Bearer {{fiona}}
+
+###
+# XS-4 | CROSS-SERVICE | Alice (admin) reads report — admin:* does NOT match report:read -> 403 DENY "no permission grant for report:read"
+GET {{rep}}/reports/{{finReport}}
+Authorization: Bearer {{alice}}
+
+###############################################################################
+# ADMIN / PAP GUARD (non-admin -> 403; no token -> 401)
+###############################################################################
+
+# ADM-1 | ADMIN-GUARD | Alice lists roles -> 200
+GET {{pdp}}/admin/roles
+Authorization: Bearer {{alice}}
+
+###
+# ADM-2 | ADMIN-GUARD | Carol lists roles -> 403 "admin access required"
+GET {{pdp}}/admin/roles
+Authorization: Bearer {{carol}}
+
+###
+# ADM-3 | ADMIN-GUARD | Alice lists users -> 200
+GET {{pdp}}/admin/users
+Authorization: Bearer {{alice}}
+
+###
+# ADM-4 | ADMIN-GUARD | Bob (Approver, not admin) lists users -> 403 "admin access required"
+GET {{pdp}}/admin/users
+Authorization: Bearer {{bob}}
+
+###
+# ADM-5 | ADMIN-GUARD | admin/roles with no token -> 401 "missing bearer token"
+GET {{pdp}}/admin/roles
+
+###############################################################################
+# SERVICE-TO-SERVICE TOKEN (PEP -> PDP guard)
+###############################################################################
+
+# SVC-1 | S2S-TOKEN | valid service token, Carol owns expense -> 200 ALLOW (ownerOnly)
+POST {{pdp}}/authz/check
+X-Service-Token: {{svctoken}}
+content-type: application/json
+
+{ "subject": { "id": "{{carolId}}", "tenantId": "ignored-pdp-rederives" },
+  "action": "expense:read",
+  "resource": { "type": "expense", "id": "{{carolExp}}", "tenantId": "{{acmeTenantId}}", "ownerId": "{{carolId}}" } }
+
+###
+# SVC-2 | S2S-TOKEN | wrong service token -> 401 "invalid service token"
+POST {{pdp}}/authz/check
+X-Service-Token: wrong-token
+content-type: application/json
+
+{ "subject": { "id": "x", "tenantId": "y" }, "action": "a", "resource": { "type": "t", "id": "i", "tenantId": "y" } }
+
+###
+# SVC-3 | S2S-TOKEN | missing service token -> 401 "invalid service token"
+POST {{pdp}}/authz/check
+content-type: application/json
+
+{ "subject": { "id": "x", "tenantId": "y" }, "action": "a", "resource": { "type": "t", "id": "i", "tenantId": "y" } }
+
+###############################################################################
+# NOT-FOUND (resource loaded before/around the gate)
+###############################################################################
+
+# NF-1 | EDGE-404 | Carol reads non-existent expense -> 404 "not found"
+GET {{exp}}/expenses/{{missingId}}
+Authorization: Bearer {{carol}}
+
+###
+# NF-2 | EDGE-404 | Fiona reads non-existent payroll -> 404 "not found"
+GET {{pay}}/payroll/{{missingId}}
+Authorization: Bearer {{fiona}}
+
+###
+# NF-3 | EDGE-404 | Alice reads non-existent report -> 404 "not found"
+GET {{rep}}/reports/{{missingId}}
+Authorization: Bearer {{alice}}
+
+###############################################################################
+# AUTH BOUNDARIES on PEPs (fail-closed at the edge)
+###############################################################################
+
+# BND-1 | AUTH-BOUNDARY | expense list, no token -> 401 "missing bearer token"
+GET {{exp}}/expenses
+
+###
+# BND-2 | AUTH-BOUNDARY | payroll, no token -> 401 "missing bearer token"
+GET {{pay}}/payroll/{{carolPay}}
+
+###
+# BND-3 | AUTH-BOUNDARY | report, garbage token -> 401 "invalid or expired token"
+GET {{rep}}/reports/{{finReport}}
+Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.garbage.sig
+
+###
+# BND-4 | AUTH-BOUNDARY | create expense, no token -> 401 "missing bearer token"
+POST {{exp}}/expenses
+content-type: application/json
+
+{ "amount": 50 }
+
+###############################################################################
+# HAPPY-PATH MUTATION
+###############################################################################
+
+# MUT-1 | RBAC+ABAC | Dave creates own expense (Employee expense:create ownerOnly) -> 201
+POST {{exp}}/expenses
+Authorization: Bearer {{dave}}
+content-type: application/json
+
+{ "amount": 42 }
+
+###############################################################################
+# AUDIT (PRD #7 — every decision recorded, queryable)
+###############################################################################
+
+# AUD-1 | AUDIT | Alice queries DENY decisions -> 200, all items decision=DENY
+GET {{pdp}}/audit?decision=DENY
+Authorization: Bearer {{alice}}
+
+###
+# AUD-2 | AUDIT | Alice queries ALLOW decisions -> 200, all items decision=ALLOW
+GET {{pdp}}/audit?decision=ALLOW
+Authorization: Bearer {{alice}}
+
+###
+# AUD-3 | AUDIT | Alice queries by userId=carol -> 200, all subjectId == carol
+GET {{pdp}}/audit?userId={{carolId}}
+Authorization: Bearer {{alice}}
+
+###
+# AUD-4 | AUDIT | Dave (non-admin) queries audit -> 403 "admin access required"
+GET {{pdp}}/audit
+Authorization: Bearer {{dave}}
+
+###############################################################################
+# DYNAMIC ROLE MANAGEMENT (PRD #6 — change takes effect next decision via policyVersion)
+# MUTATING. Run in order. Reseed afterward to restore state.
+###############################################################################
+
+# DYN-0 | DYNAMIC | baseline: Dave (Employee) approve Dave's expense -> 403 "no permission grant for expense:approve"
+POST {{exp}}/expenses/{{daveExp}}/approve
+Authorization: Bearer {{dave}}
+
+###
+# DYN-1 | DYNAMIC | Alice assigns Approver to Dave -> 200 {ok:true} (bumps policyVersion)
+POST {{pdp}}/admin/users/{{daveId}}/roles
+Authorization: Bearer {{alice}}
+content-type: application/json
+
+{ "roleId": "{{approverRole}}" }
+
+###
+# DYN-2 | DYNAMIC | Dave now approves own-subtree (Engineering) expense -> 200 ALLOW "condition inOrgSubtree"
+POST {{exp}}/expenses/{{daveExp}}/approve
+Authorization: Bearer {{dave}}
+
+###
+# DYN-3 | DYNAMIC | Alice revokes Approver from Dave -> 200 {ok:true} (bumps policyVersion)
+DELETE {{pdp}}/admin/users/{{daveId}}/roles/{{approverRole}}
+Authorization: Bearer {{alice}}
+
+###
+# DYN-4 | DYNAMIC | Dave approve again -> 403 "no permission grant for expense:approve" (revocation effective immediately)
+POST {{exp}}/expenses/{{daveExp}}/approve
+Authorization: Bearer {{dave}}
+
+###
+# DYN-5 | DYNAMIC | Alice creates a role -> 201
+# @name createRole
+POST {{pdp}}/admin/roles
+Authorization: Bearer {{alice}}
+content-type: application/json
+
+{ "name": "QA-Temp", "grants": [] }
+
+###
+@newRole = {{createRole.response.body._id}}
+
+# DYN-6 | DYNAMIC | Alice adds a grant to the new role -> 200 (grant present)
+POST {{pdp}}/admin/roles/{{newRole}}/grants
+Authorization: Bearer {{alice}}
+content-type: application/json
+
+{ "action": "report:read", "resourceType": "report" }
+
+###
+# DYN-7 | DYNAMIC | add grant to non-existent role -> 404 "role not found"
+POST {{pdp}}/admin/roles/{{missingId}}/grants
+Authorization: Bearer {{alice}}
+content-type: application/json
+
+{ "action": "x", "resourceType": "y" }
+
+###
+# DYN-8 | DYNAMIC | assign role to non-existent user -> 404 "user not found"
+POST {{pdp}}/admin/users/{{missingId}}/roles
+Authorization: Bearer {{alice}}
+content-type: application/json
+
+{ "roleId": "{{employeeRole}}" }
